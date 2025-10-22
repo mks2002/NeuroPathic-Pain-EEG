@@ -60,7 +60,7 @@ OUT_DIR = Path("FP1_featureData")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 PREFERRED_FORMAT = "fif"         # 'fif' preferred, fallback to 'npy'
-CHANNEL = "FP1"                  # <-- the channel you told me
+CHANNEL = "FP1"                  # channel to extract features from
 SFREQ = 250                      # Hz
 WIN_SEC = 5                      # seconds
 WIN_SAMPLES = WIN_SEC * SFREQ    # 1250
@@ -116,7 +116,15 @@ def feat_basic_stats(x):
     res["trimmed_mean_10"] = float(stats.trim_mean(x, 0.1))
     res["trimmed_mean_15"] = float(stats.trim_mean(x, 0.15))
     # MAD
-    res["mad"] = float(stats.median_absolute_deviation(x))
+    # Median Absolute Deviation (robust to outliers)
+    try:
+        from scipy.stats import median_abs_deviation
+        res["mad"] = float(median_abs_deviation(x))
+    except Exception:
+        # fallback manual implementation
+        med = np.median(x)
+        res["mad"] = float(np.median(np.abs(x - med)))
+
     # percentiles
     p10 = np.percentile(x, 10)
     p25 = np.percentile(x, 25)
@@ -217,7 +225,7 @@ BANDS = {
 def bandpower_welch(x, sf=250, band=(1,4), nperseg=1024):
     f, Pxx = welch(x, fs=sf, nperseg=min(nperseg, len(x)))
     idx = np.logical_and(f >= band[0], f <= band[1])
-    bp = np.trapz(Pxx[idx], f[idx]) if np.any(idx) else 0.0
+    bp = np.trapezoid(Pxx[idx], f[idx]) if np.any(idx) else 0.0
     return bp, f, Pxx
 
 def feat_frequency(x, sf=250):
@@ -226,7 +234,7 @@ def feat_frequency(x, sf=250):
     # compute PSD with decent resolution
     nperseg = 1024
     f, Pxx = welch(x, fs=sf, nperseg=min(nperseg, len(x)))
-    total_power = np.trapz(Pxx, f)
+    total_power = np.trapezoid(Pxx, f)
     # band powers
     band_powers = {}
     for name, rng in BANDS.items():
@@ -499,6 +507,8 @@ def compute_features_window(x, sf=250):
 # ----------------------------------------------
 # Main processing loop - per ID create CSV
 # ----------------------------------------------
+
+
 def find_subject_files(data_dir):
     # returns dict id -> {'EO': path, 'EC': path}
     all_files = list(Path(data_dir).glob("*"))
@@ -677,3 +687,4 @@ for subj_key, files_dict in sorted(mapping.items(), key=lambda x: x[0]):
         print(f"Error processing {subj_key}: {e}")
 
 print("All done.")
+
