@@ -215,7 +215,7 @@ def feat_amplitude(x, sf=250):
 
 # Frequency / EEG specific features
 BANDS = {
-    "delta": (1,4),
+    "delta": (0.5,4),
     "theta": (4,8),
     "alpha": (8,13),
     "beta": (13,30),
@@ -351,6 +351,35 @@ def samp_entropy(x, m=2, r=None):
         return -np.log(A / B) if (A>0 and B>0) else 0.0
     except Exception:
         return 0.0
+    
+import numpy as np
+
+def samp_entropy(x, m=2, r=None):
+    # Basic SampEn implementation
+    x = np.array(x)
+    n = len(x)
+    if r is None:
+        r = 0.2 * np.std(x) if np.std(x) > 0 else 0.2
+
+    def _phi(m):
+        count = 0
+        for i in range(n - m):
+            xi = x[i:i + m]
+            for j in range(i + 1, n - m + 1):
+                xj = x[j:j + m]
+                if np.max(np.abs(xi - xj)) <= r:
+                    count += 1
+        return count
+
+    try:
+        A = _phi(m + 1)
+        B = _phi(m)
+        sample_entropy = -np.log(A / B) if (A > 0 and B > 0) else 0.0
+    except Exception:
+        sample_entropy = 0.0
+
+    feats["sample_entropy"] = sample_entropy
+
 
 def approx_entropy(x, m=2, r=None):
     # crude ApEn (slower)
