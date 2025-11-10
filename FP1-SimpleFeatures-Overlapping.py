@@ -29,11 +29,11 @@ PAIN_SCORE = {
 
 
 def pain_label(score):
-    if score in (0, 1, 2):
+    if score in (1, 2, 3, 4):
         return "low"
-    elif score in (3, 4, 5, 6):
+    elif score in ( 5, 6):
         return "mid"
-    else:
+    elif score in (7, 8, 9):
         return "high"
 
 
