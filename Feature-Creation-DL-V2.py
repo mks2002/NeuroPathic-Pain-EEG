@@ -1,4 +1,6 @@
-# deep_autoencoder_feature_extraction.py
+# ==========================================================
+# deep_autoencoder_feature_extraction_v2.py
+# ==========================================================
 import os
 import numpy as np
 import pandas as pd
@@ -15,9 +17,11 @@ DATA_DIR = Path("Segment-Joined")
 OUT_DIR = Path("DL-Features_V1")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-CHANNELS = ['FP1', 'FP2', 'F3', 'F4', 'C3', 'C4', 'P3', 'P4', 'O1', 'O2',
-            'F7', 'F8', 'T7', 'T8', 'P7', 'P8', 'Fz', 'Cz', 'Pz',
-            'M1', 'M2', 'AFz', 'CPz', 'POz']
+CHANNELS = [
+    'FP1', 'FP2', 'F3', 'F4', 'C3', 'C4', 'P3', 'P4', 'O1', 'O2',
+    'F7', 'F8', 'T7', 'T8', 'P7', 'P8', 'Fz', 'Cz', 'Pz',
+    'M1', 'M2', 'AFz', 'CPz', 'POz'
+]
 SFREQ = 250
 WIN_SECS = 5
 WIN_SAMPLES = WIN_SECS * SFREQ
@@ -26,11 +30,31 @@ LATENT_DIM = 20    # features per channel
 EPOCHS = 30
 BATCH_SIZE = 64
 
+# ------------------------------------------------------
+# Pain score mapping
+# ------------------------------------------------------
+PAIN_SCORE = {
+    0: 7, 1: 4, 2: 3, 3: 8, 4: 5, 5: 2, 6: 7, 7: 3, 8: 4, 9: 9,
+    10: 3, 11: 6, 13: 3, 14: 3, 15: 8, 16: 5, 18: 5, 19: 8, 20: 7,
+    21: 6, 22: 7, 23: 6, 24: 9, 25: 8, 26: 0, 27: 1, 30: 3, 31: 9,
+    33: 6, 35: 1, 37: 0, 38: 7, 39: 8, 40: 4, 41: 7, 43: 6
+}
+
+def pain_label(score):
+    """Convert numeric pain score into categorical label."""
+    if score in (1, 2, 3, 4):
+        return "low"
+    elif score in (5, 6):
+        return "mid"
+    elif score in (7, 8, 9):
+        return "high"
+    else:
+        return None  # exclude score=0
+
 # ======================================================
 # ATTENTION MODULE (CBAM 1D)
 # ======================================================
 def cbam_block(inputs, ratio=8):
-    # Channel Attention
     channel = inputs.shape[-1]
     shared_dense_one = layers.Dense(channel // ratio, activation='relu', use_bias=False)
     shared_dense_two = layers.Dense(channel, activation='sigmoid', use_bias=False)
@@ -138,8 +162,11 @@ for ch in CHANNELS:
     # --- build & train autoencoder ---
     ae, encoder = build_autoencoder((WIN_SAMPLES,1), LATENT_DIM)
     early = EarlyStopping(monitor='loss', patience=5, restore_best_weights=True)
-    ae.fit(all_windows, all_windows,
-           epochs=EPOCHS, batch_size=BATCH_SIZE, verbose=1, shuffle=True, callbacks=[early])
+    ae.fit(
+        all_windows, all_windows,
+        epochs=EPOCHS, batch_size=BATCH_SIZE,
+        verbose=1, shuffle=True, callbacks=[early]
+    )
 
     # --- extract latent features for each subject ---
     start_idx = 0
@@ -147,13 +174,26 @@ for ch in CHANNELS:
         n_win = subj_window_counts[subj_id]
         subj_data = all_windows[start_idx:start_idx+n_win]
         start_idx += n_win
+
         latent = encoder.predict(subj_data, batch_size=128, verbose=0)
+
+        # Get pain score and label
+        pain_score = PAIN_SCORE.get(subj_id, None)
+        label = pain_label(pain_score)
+
+        if label is None:
+            print(f"⚠️ Skipping subject {subj_id} (pain_score={pain_score})")
+            continue
+
         cols = [f"feat{i+1}_{ch}" for i in range(LATENT_DIM)]
         df = pd.DataFrame(latent, columns=cols)
         df.insert(0, "window_idx", np.arange(len(df)))
         df.insert(0, "subj_id", subj_id)
+        df["pain_score"] = pain_score
+        df["label"] = label
+
         out_file = ch_out / f"ID{subj_id}_DLfeatures.csv"
         df.to_csv(out_file, index=False)
-        print(f"Saved {out_file} ({df.shape})")
+        print(f"✅ Saved {out_file} ({df.shape})")
 
-print("\n🎯 Deep-learned features (20-dim/channel) saved in DL-Features_V1/")
+print("\n🎯 Deep-learned features (20-dim/channel) + pain labels saved in DL-Features_V1/")
