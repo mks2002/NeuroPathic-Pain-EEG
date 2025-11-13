@@ -1,0 +1,20 @@
+
+This is the position of the electrodes at different places of head scalp.
+
+
+
+      'F3', 'F4',
+'F7', 'FP1', 'FP2', 'F8'
+          'AFz'
+          'Fz'
+
+'T7', 'C3', 'Cz', 'C4', 'T8'
+         'CPz'
+'P7', 'P3', 'Pz', 'P4','P8'
+         'POz'
+       'O1', 'O2'
+
+       'M1', 'M2'
+
+
+In the figure they provide there is 2 channels which is FPz, FCz this 2 dont have any matching with channels available in gdf files , in place of that F3, F4 are there in the channels.
