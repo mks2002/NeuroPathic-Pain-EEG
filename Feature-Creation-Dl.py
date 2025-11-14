@@ -1,4 +1,6 @@
+# ==========================================================
 # deep_autoencoder_feature_extraction.py
+# ==========================================================
 import os
 import numpy as np
 import pandas as pd
@@ -15,9 +17,12 @@ DATA_DIR = Path("Segment-Joined")
 OUT_DIR = Path("DL-Features_V1")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-CHANNELS = ['FP1', 'FP2', 'F3', 'F4', 'C3', 'C4', 'P3', 'P4', 'O1', 'O2',
-            'F7', 'F8', 'T7', 'T8', 'P7', 'P8', 'Fz', 'Cz', 'Pz',
-            'M1', 'M2', 'AFz', 'CPz', 'POz']
+CHANNELS = [
+    'FP1', 'FP2', 'F3', 'F4', 'C3', 'C4', 'P3', 'P4', 'O1', 'O2',
+    'F7', 'F8', 'T7', 'T8', 'P7', 'P8', 'Fz', 'Cz', 'Pz',
+    'M1', 'M2', 'AFz', 'CPz', 'POz'
+]
+
 SFREQ = 250
 WIN_SECS = 5
 WIN_SAMPLES = WIN_SECS * SFREQ
@@ -26,35 +31,67 @@ LATENT_DIM = 20    # features per channel
 EPOCHS = 30
 BATCH_SIZE = 64
 
+# ------------------------------------------------------
+# Pain score mapping
+# ------------------------------------------------------
+PAIN_SCORE = {
+    0: 7, 1: 4, 2: 3, 3: 8, 4: 5, 5: 2, 6: 7, 7: 3, 8: 4, 9: 9,
+    10: 3, 11: 6, 13: 3, 14: 3, 15: 8, 16: 5, 18: 5, 19: 8, 20: 7,
+    21: 6, 22: 7, 23: 6, 24: 9, 25: 8, 26: 0, 27: 1, 30: 3, 31: 9,
+    33: 6, 35: 1, 37: 0, 38: 7, 39: 8, 40: 4, 41: 7, 43: 6
+}
+
+def pain_label(score):
+    """Convert numeric pain score into categorical label."""
+    if score in (1, 2, 3, 4):
+        return "low"
+    elif score in (5, 6):
+        return "mid"
+    elif score in (7, 8, 9):
+        return "high"
+    else:
+        return None  # exclude score=0
+
+
+
 # ======================================================
-# ATTENTION MODULE (CBAM 1D)
+#  CBAM BLOCK (Keras 3 / TF 2.16 Compatible)
 # ======================================================
 def cbam_block(inputs, ratio=8):
-    # Channel Attention
-    channel = inputs.shape[-1]
+    channel = int(inputs.shape[-1])
+
+    # --- Channel Attention ---
     shared_dense_one = layers.Dense(channel // ratio, activation='relu', use_bias=False)
     shared_dense_two = layers.Dense(channel, activation='sigmoid', use_bias=False)
+
     avg_pool = layers.GlobalAveragePooling1D()(inputs)
     max_pool = layers.GlobalMaxPooling1D()(inputs)
+
     avg_dense = shared_dense_two(shared_dense_one(avg_pool))
     max_dense = shared_dense_two(shared_dense_one(max_pool))
+
     channel_attention = layers.Add()([avg_dense, max_dense])
     channel_attention = layers.Activation('sigmoid')(channel_attention)
     channel_refined = layers.Multiply()([inputs, layers.Reshape((1, channel))(channel_attention)])
 
-    # Spatial Attention
-    avg_pool = K.mean(channel_refined, axis=-1, keepdims=True)
-    max_pool = K.max(channel_refined, axis=-1, keepdims=True)
+    # --- Spatial Attention (using Lambda layers) ---
+    avg_pool = layers.Lambda(lambda x: tf.reduce_mean(x, axis=-1, keepdims=True))(channel_refined)
+    max_pool = layers.Lambda(lambda x: tf.reduce_max(x, axis=-1, keepdims=True))(channel_refined)
     concat = layers.Concatenate(axis=-1)([avg_pool, max_pool])
     spatial_attention = layers.Conv1D(1, kernel_size=7, padding='same', activation='sigmoid')(concat)
     refined = layers.Multiply()([channel_refined, spatial_attention])
     return refined
 
+
+
+
 # ======================================================
-# AUTOENCODER MODEL
+#  AUTOENCODER (robust, TF 2.15+ / Keras 3 safe)
 # ======================================================
-def build_autoencoder(input_shape=(WIN_SAMPLES,1), latent_dim=20):
+def build_autoencoder(input_shape=(1250, 1), latent_dim=20):
     inp = layers.Input(shape=input_shape)
+
+    # ----- ENCODER -----
     x = layers.Conv1D(32, 7, activation='relu', padding='same')(inp)
     x = layers.BatchNormalization()(x)
     x = layers.Conv1D(64, 5, activation='relu', padding='same', strides=2)(x)
@@ -63,17 +100,29 @@ def build_autoencoder(input_shape=(WIN_SAMPLES,1), latent_dim=20):
     x = layers.GlobalAveragePooling1D()(x)
     latent = layers.Dense(latent_dim, activation=None, name='latent')(x)
 
-    # Decoder
-    x = layers.Dense((WIN_SAMPLES // 4) * 64, activation='relu')(latent)
-    x = layers.Reshape((WIN_SAMPLES // 4, 64))(x)
+    # ----- DECODER -----
+    x = layers.Dense((input_shape[0] // 4) * 64, activation='relu')(latent)
+    x = layers.Reshape((input_shape[0] // 4, 64))(x)
     x = layers.Conv1DTranspose(64, 3, strides=2, padding='same', activation='relu')(x)
     x = layers.Conv1DTranspose(32, 3, strides=2, padding='same', activation='relu')(x)
-    out = layers.Conv1D(1, 3, padding='same', activation='linear')(x)
+    x = layers.Conv1D(1, 3, padding='same', activation='linear')(x)
 
-    model = models.Model(inp, out, name='conv_cbam_autoencoder')
+    # --- Ensure exact output length (1250) ---
+    out_len = x.shape[1]
+    target_len = input_shape[0]
+    if out_len is not None and out_len > target_len:
+        crop = int(out_len - target_len)
+        x = layers.Cropping1D((0, crop))(x)
+    elif out_len is not None and out_len < target_len:
+        pad = int(target_len - out_len)
+        x = layers.ZeroPadding1D((0, pad))(x)
+
+    model = models.Model(inp, x, name='conv_cbam_autoencoder')
     encoder = models.Model(inp, latent, name='encoder')
     model.compile(optimizer='adam', loss='mse')
     return model, encoder
+
+
 
 # ======================================================
 # LOAD EEG FILES AND WINDOWING
@@ -138,8 +187,11 @@ for ch in CHANNELS:
     # --- build & train autoencoder ---
     ae, encoder = build_autoencoder((WIN_SAMPLES,1), LATENT_DIM)
     early = EarlyStopping(monitor='loss', patience=5, restore_best_weights=True)
-    ae.fit(all_windows, all_windows,
-           epochs=EPOCHS, batch_size=BATCH_SIZE, verbose=1, shuffle=True, callbacks=[early])
+    ae.fit(
+        all_windows, all_windows,
+        epochs=EPOCHS, batch_size=BATCH_SIZE,
+        verbose=1, shuffle=True, callbacks=[early]
+    )
 
     # --- extract latent features for each subject ---
     start_idx = 0
@@ -147,13 +199,31 @@ for ch in CHANNELS:
         n_win = subj_window_counts[subj_id]
         subj_data = all_windows[start_idx:start_idx+n_win]
         start_idx += n_win
+
         latent = encoder.predict(subj_data, batch_size=128, verbose=0)
+
+        # Get pain score and label
+        pain_score = PAIN_SCORE.get(subj_id, None)
+        label = pain_label(pain_score)
+
+        if label is None:
+            print(f"⚠️ Skipping subject {subj_id} (pain_score={pain_score})")
+            continue
+
         cols = [f"feat{i+1}_{ch}" for i in range(LATENT_DIM)]
         df = pd.DataFrame(latent, columns=cols)
         df.insert(0, "window_idx", np.arange(len(df)))
         df.insert(0, "subj_id", subj_id)
+        df["pain_score"] = pain_score
+        df["label"] = label
+
         out_file = ch_out / f"ID{subj_id}_DLfeatures.csv"
         df.to_csv(out_file, index=False)
-        print(f"Saved {out_file} ({df.shape})")
+        print(f"✅ Saved {out_file} ({df.shape})")
 
-print("\n🎯 Deep-learned features (20-dim/channel) saved in DL-Features_V1/")
+print("\n🎯 Deep-learned features (20-dim/channel) + pain labels saved in DL-Features_V1/")
+
+
+
+
+
